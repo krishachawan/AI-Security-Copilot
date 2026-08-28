@@ -1,0 +1,22 @@
+{
+    "base_model": "microsoft/codebert-base",
+    "task": "binary_code_vulnerability_classification",
+    "num_labels": 2,
+    "labels": {
+        "0": "non-vulnerable",
+        "1": "vulnerable"
+    },
+    "max_length": 512,
+    "stride": 128,
+    "max_chunks_per_function": 16,
+    "chunk_aggregation": "mean_probability",
+    "classification_threshold": 0.5,
+    "validation_f1": 0.9656,
+    "test_accuracy": 0.9685,
+    "test_precision": 0.9568,
+    "test_recall": 0.9733,
+    "test_f1": 0.965,
+    "test_roc_auc": 0.9932,
+    "test_functions": 3528,
+    "seed": 42
+}

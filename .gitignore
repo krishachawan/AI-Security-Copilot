@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ML models / checkpoints
+*.pt
+*.pth
+*.bin
+*.safetensors
+checkpoints/
+outputs/
+
+# Datasets
+data/
+datasets/
+*.csv
+*.jsonl
+
+# Temporary files
+*.tmp
+*.temp

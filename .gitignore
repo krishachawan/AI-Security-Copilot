@@ -45,3 +45,12 @@ datasets/
 # Temporary files
 *.tmp
 *.temp
+
+# Generated results
+results/
+
+# Packaged archives
+*.zip
+
+# Local extra models
+extra models/

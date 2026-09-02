@@ -2,6 +2,7 @@ from app.classifier.codebert import CodeBERTClassifier
 from app.core.config import MODEL_PATH
 from app.sast.service import scan_code
 from app.rag.service import retrieve_security_context
+from app.llm.service import generate_security_analysis
 
 
 # =========================================================
@@ -26,9 +27,8 @@ def has_safe_command_execution_pattern(code: str) -> bool:
         2. shell=False is explicitly specified
         3. commands come from an allowlist
 
-    This is NOT intended to prove arbitrary code is safe.
-    It only handles the specific safe command-execution
-    pattern used by the application.
+    This only recognizes the specific safe pattern.
+    It does not prove that arbitrary code is safe.
     """
 
     uses_subprocess = (
@@ -72,12 +72,10 @@ def analyze_code(
         )
 
     # =====================================================
-    # 1. CodeBERT PREDICTION
+    # 1. CODEBERT PREDICTION
     # =====================================================
 
-    codebert_result = (
-        codebert_classifier.predict(code)
-    )
+    codebert_result = codebert_classifier.predict(code)
 
     # =====================================================
     # 2. SAST SCANNING
@@ -123,27 +121,41 @@ def analyze_code(
         or has_high_sast
         or has_medium_sast
     )
+        # Overall severity = highest severity reported by SAST
+    severity_order = {
+        "CRITICAL": 4,
+        "HIGH": 3,
+        "MEDIUM": 2,
+        "LOW": 1,
+        "INFO": 0,
+    }
 
-    has_any_sast = (
-        len(sast_findings) > 0
-    )
+    sast_severities = [
+        str(finding.get("severity", "INFO")).upper()
+        for finding in sast_findings
+        if finding.get("severity") is not None
+    ]
+
+    if sast_severities:
+        severity = max(
+            sast_severities,
+            key=lambda value: severity_order.get(value, 0)
+        )
+    else:
+        severity = "N/A"
 
     # =====================================================
     # 4. CODEBERT SIGNALS
     # =====================================================
 
-    vulnerable = (
-        codebert_result.get(
-            "vulnerable",
-            False
-        )
+    vulnerable = codebert_result.get(
+        "vulnerable",
+        False
     )
 
-    confidence = (
-        codebert_result.get(
-            "confidence",
-            0.0
-        )
+    confidence = codebert_result.get(
+        "confidence",
+        0.0
     )
 
     high_confidence = (
@@ -151,7 +163,7 @@ def analyze_code(
     )
 
     # =====================================================
-    # 5. SAFE-PATTERN ANALYSIS
+    # 5. SAFE PATTERN ANALYSIS
     # =====================================================
 
     safe_command_pattern = (
@@ -164,17 +176,17 @@ def analyze_code(
     #
     # Priority:
     #
-    # 1. Clearly safe command pattern + no meaningful
-    #    SAST evidence
+    # 1. Explicit safe command pattern
+    #    + no MEDIUM/HIGH/CRITICAL SAST
     #
-    # 2. CodeBERT + MEDIUM/HIGH/CRITICAL SAST agreement
+    # 2. CodeBERT + meaningful SAST agreement
     #
     # 3. Independent HIGH/CRITICAL SAST
     #
-    # 4. CodeBERT high-confidence prediction alone
-    #    -> only potential vulnerability
+    # 4. High-confidence CodeBERT alone
+    #    -> potential vulnerability
     #
-    # 5. CodeBERT lower-confidence prediction
+    # 5. Lower-confidence CodeBERT
     #    -> potential vulnerability
     #
     # 6. MEDIUM SAST
@@ -200,8 +212,8 @@ def analyze_code(
     #     shell=False
     # )
     #
-    # This prevents CodeBERT from turning this specific
-    # safe pattern into a vulnerability.
+    # LOW-only SAST warnings such as B404/B603
+    # do not override this safe pattern.
     # -----------------------------------------------------
 
     if (
@@ -215,12 +227,11 @@ def analyze_code(
 
     # -----------------------------------------------------
     # CASE 2:
-    # Strong agreement between CodeBERT and SAST
+    # CodeBERT strongly predicts vulnerability AND
+    # SAST provides MEDIUM/HIGH/CRITICAL evidence.
     #
-    # Example:
-    #
-    # CodeBERT = vulnerable, confidence > 0.90
-    # SAST = MEDIUM/HIGH/CRITICAL
+    # This represents agreement between ML and
+    # static-analysis evidence.
     # -----------------------------------------------------
 
     elif (
@@ -235,7 +246,7 @@ def analyze_code(
 
     # -----------------------------------------------------
     # CASE 3:
-    # SAST independently detected HIGH/CRITICAL
+    # SAST independently detects HIGH/CRITICAL.
     #
     # CodeBERT does not need to agree.
     # -----------------------------------------------------
@@ -248,10 +259,10 @@ def analyze_code(
 
     # -----------------------------------------------------
     # CASE 4:
-    # CodeBERT strongly predicts vulnerability but SAST
-    # provides no meaningful confirmation.
+    # CodeBERT strongly predicts vulnerability but
+    # SAST does not provide meaningful confirmation.
     #
-    # Do NOT call this confirmed.
+    # Do not call it confirmed.
     # -----------------------------------------------------
 
     elif vulnerable and high_confidence:
@@ -274,14 +285,7 @@ def analyze_code(
 
     # -----------------------------------------------------
     # CASE 6:
-    # MEDIUM SAST finding
-    #
-    # Example:
-    #
-    # CodeBERT = non-vulnerable
-    # SAST = MEDIUM CWE-89
-    #
-    # This is still meaningful evidence.
+    # MEDIUM SAST finding.
     # -----------------------------------------------------
 
     elif has_medium_sast:
@@ -292,10 +296,9 @@ def analyze_code(
 
     # -----------------------------------------------------
     # CASE 7:
-    # LOW-only SAST findings
+    # LOW-only SAST findings.
     #
     # Examples:
-    #
     # B404
     # B603
     # -----------------------------------------------------
@@ -321,19 +324,24 @@ def analyze_code(
     # 7. RAG DECISION
     # =====================================================
     #
-    # RAG runs when there is meaningful vulnerability
-    # evidence:
+    # IMPORTANT:
     #
-    # - CodeBERT predicts vulnerability
-    # OR
-    # - SAST has MEDIUM/HIGH/CRITICAL findings
+    # RAG now follows the FINAL AGGREGATED VERDICT.
     #
-    # LOW-only SAST findings do not trigger RAG.
+    # This prevents contradictory results such as:
+    #
+    # verdict = no_vulnerability_detected
+    #
+    # while RAG says:
+    #
+    # CWE-78 Command Injection
+    #
+    # RAG runs only when the aggregation layer considers
+    # the code potentially vulnerable.
     # =====================================================
 
     should_run_rag = (
-        vulnerable
-        or has_medium_or_above_sast
+        verdict != "no_vulnerability_detected"
     )
 
     if should_run_rag:
@@ -353,7 +361,43 @@ def analyze_code(
         }
 
     # =====================================================
-    # 8. FINAL RESPONSE
+    # 8. LLM EXPLANATION + REMEDIATION
+    # =====================================================
+    # Gemini is downstream of detection and RAG. It does not
+    # modify the aggregation verdict. It explains the evidence
+    # and generates remediation grounded in the retrieved CWE
+    # context.
+
+    if should_run_rag and rag_result.get("context"):
+
+        try:
+            llm_result = generate_security_analysis(
+                code=code,
+                verdict=verdict,
+                codebert=codebert_result,
+                sast_findings=sast_findings,
+                rag_context=rag_result["context"],
+            )
+
+            llm_result["status"] = "completed"
+
+        except Exception as exc:
+
+            # LLM failure must not invalidate the detector's result.
+            llm_result = {
+                "status": "failed",
+                "error": str(exc),
+            }
+
+    else:
+
+        llm_result = {
+            "status": "not_run",
+            "reason": "No vulnerability verdict requiring LLM analysis."
+        }
+
+    # =====================================================
+    # 9. FINAL RESPONSE
     # =====================================================
 
     return {
@@ -362,10 +406,13 @@ def analyze_code(
         "language": sast_result.language,
 
         "verdict": verdict,
+        "severity": severity,
 
         "codebert": codebert_result,
 
         "sast": sast_result.model_dump(),
 
-        "rag": rag_result
+        "rag": rag_result,
+
+        "llm": llm_result
     }

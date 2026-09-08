@@ -1,11 +1,14 @@
-import sqlite3
+import subprocess
 
 
-def get_user(username):
-    connection = sqlite3.connect("users.db")
+def run_command(request_data):
+    command = request_data.get("command")
 
-    query = "SELECT * FROM users WHERE username = '" + username + "'"
+    result = subprocess.run(
+        command,
+        shell=True,
+        capture_output=True,
+        text=True
+    )
 
-    cursor = connection.execute(query)
-
-    return cursor.fetchall()
+    return result.stdout

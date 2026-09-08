@@ -155,6 +155,7 @@ function App() {
     const sast = result.sast;
     const codebert = result.codebert;
     const rag = result.rag;
+    const patchVerification = llm?.patch_verification;
 
     return (
       <div className="app">
@@ -285,6 +286,19 @@ function App() {
                     : "Analysis unavailable"
                 }
                 active={llm?.status === "completed"}
+              />
+              <PipelineItem
+                name="Patch Verification"
+                status={
+                  patchVerification?.status === "PATCH_VERIFIED"
+                    ? "Patch successfully re-validated"
+                    : patchVerification?.status === "PATCH_REQUIRES_REVIEW"
+                      ? "Patch requires further review"
+                      : patchVerification?.status === "NOT_RUN"
+                        ? "Verification not run"
+                        : "Verification unavailable"
+                }
+                active={patchVerification?.status === "PATCH_VERIFIED"}
               />
             </div>
           </section>
@@ -423,6 +437,108 @@ function App() {
                       <pre>
                         <code>{llm.secure_code}</code>
                       </pre>
+                    </div>
+                  </div>
+                )}
+                {/* PATCH VERIFICATION */}
+
+                {patchVerification && (
+                  <div
+                    className={`patch-verification-card ${
+                      patchVerification.status === "PATCH_VERIFIED"
+                        ? "patch-verified"
+                        : "patch-review"
+                    }`}
+                  >
+                    <div className="patch-verification-header">
+                      <div
+                        className={`patch-verification-icon ${
+                          patchVerification.status === "PATCH_VERIFIED"
+                            ? "verified-icon"
+                            : "review-icon"
+                        }`}
+                      >
+                        {patchVerification.status === "PATCH_VERIFIED"
+                          ? "✓"
+                          : "!"}
+                      </div>
+
+                      <div>
+                        <div className="patch-verification-title">
+                          {patchVerification.status === "PATCH_VERIFIED"
+                            ? "Patch Verified"
+                            : "Patch Requires Review"}
+                        </div>
+
+                        <div className="patch-verification-subtitle">
+                          {patchVerification.status === "PATCH_VERIFIED"
+                            ? "The generated patch was successfully re-analyzed by the security pipeline."
+                            : "The generated patch still triggered security indicators during re-analysis."}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Verification Message */}
+
+                    {patchVerification.message && (
+                      <div className="patch-verification-message">
+                        {patchVerification.message}
+                      </div>
+                    )}
+
+                    {/* Verification Details */}
+
+                    <div className="verification-details">
+                      <div className="verification-item">
+                        <span className="verification-label">
+                          Verification Status
+                        </span>
+
+                        <strong>
+                          {patchVerification.status?.replaceAll("_", " ")}
+                        </strong>
+                      </div>
+
+                      {/* CodeBERT Verification */}
+
+                      {patchVerification.codebert && (
+                        <div className="verification-item">
+                          <span className="verification-label">
+                            CodeBERT Re-analysis
+                          </span>
+
+                          <strong>
+                            {patchVerification.codebert.vulnerable
+                              ? "Potential vulnerability detected"
+                              : "No vulnerability detected"}
+                          </strong>
+                        </div>
+                      )}
+
+                      {/* SAST Verification */}
+
+                      {patchVerification.sast && (
+                        <div className="verification-item">
+                          <span className="verification-label">
+                            Remaining SAST Findings
+                          </span>
+
+                          <strong>
+                            {patchVerification.sast?.summary?.total ??
+                              patchVerification.remaining_findings?.length ??
+                              0}
+                          </strong>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Warning */}
+
+                    <div className="verification-note">
+                      Automated verification indicates whether the original
+                      vulnerability indicators were detected during re-analysis.
+                      It does not guarantee the absence of all possible security
+                      vulnerabilities.
                     </div>
                   </div>
                 )}

@@ -55,7 +55,221 @@ def has_safe_command_execution_pattern(code: str) -> bool:
         and explicit_shell_false
         and has_allowlist
     )
+# =========================================================
+# PATCH VERIFICATION
+# =========================================================
 
+def verify_patch(
+    patched_code: str,
+    filename: str,
+) -> dict:
+    """
+    Re-analyze LLM-generated patched code using the
+    CodeBERT + SAST detection layers.
+
+    This function does NOT run RAG or the LLM again.
+    It is used only to verify whether the patched code
+    still triggers vulnerability indicators.
+    """
+
+    if not patched_code or not patched_code.strip():
+
+        return {
+            "verified": False,
+            "status": "PATCH_VERIFICATION_FAILED",
+            "message": (
+                "No patched code was provided for verification."
+            ),
+        }
+
+    # =====================================================
+    # 1. CODEBERT PREDICTION
+    # =====================================================
+
+    codebert_result = codebert_classifier.predict(
+        patched_code
+    )
+
+    # =====================================================
+    # 2. SAST SCANNING
+    # =====================================================
+
+    sast_result = scan_code(
+        code=patched_code,
+        filename=filename
+    )
+
+    sast_findings = [
+        finding.model_dump()
+        for finding in sast_result.findings
+    ]
+
+    # =====================================================
+    # 3. SAST SEVERITY SIGNALS
+    # =====================================================
+
+    has_critical_sast = (
+        sast_result.summary.critical > 0
+    )
+
+    has_high_sast = (
+        sast_result.summary.high > 0
+    )
+
+    has_medium_sast = (
+        sast_result.summary.medium > 0
+    )
+
+    has_low_sast = (
+        sast_result.summary.low > 0
+    )
+
+    has_high_or_critical_sast = (
+        has_critical_sast
+        or has_high_sast
+    )
+
+    has_medium_or_above_sast = (
+        has_critical_sast
+        or has_high_sast
+        or has_medium_sast
+    )
+
+    # =====================================================
+    # 4. CODEBERT SIGNALS
+    # =====================================================
+
+    vulnerable = codebert_result.get(
+        "vulnerable",
+        False
+    )
+
+    confidence = codebert_result.get(
+        "confidence",
+        0.0
+    )
+
+    high_confidence = (
+        confidence >= 0.90
+    )
+
+    # =====================================================
+    # 5. SAFE COMMAND PATTERN
+    # =====================================================
+
+    safe_command_pattern = (
+        has_safe_command_execution_pattern(
+            patched_code
+        )
+    )
+
+    # =====================================================
+    # 6. APPLY SAME DETECTION LOGIC
+    # =====================================================
+
+    if (
+        safe_command_pattern
+        and not has_medium_or_above_sast
+    ):
+
+        verdict = (
+            "no_vulnerability_detected"
+        )
+
+    elif (
+        vulnerable
+        and high_confidence
+        and has_medium_or_above_sast
+    ):
+
+        verdict = (
+            "high_confidence_vulnerability"
+        )
+
+    elif has_high_or_critical_sast:
+
+        verdict = (
+            "sast_detected_vulnerability"
+        )
+
+    elif vulnerable and high_confidence:
+
+        verdict = (
+            "potential_vulnerability"
+        )
+
+    elif vulnerable:
+
+        verdict = (
+            "potential_vulnerability"
+        )
+
+    elif has_medium_sast:
+
+        verdict = (
+            "potential_vulnerability"
+        )
+
+    elif has_low_sast:
+
+        verdict = (
+            "no_vulnerability_detected"
+        )
+
+    else:
+
+        verdict = (
+            "no_vulnerability_detected"
+        )
+
+    # =====================================================
+    # 7. PATCH VERIFICATION DECISION
+    # =====================================================
+
+    verified = (
+        verdict == "no_vulnerability_detected"
+    )
+
+    if verified:
+
+        status = "PATCH_VERIFIED"
+
+        message = (
+            "The LLM-generated patch was re-analyzed using "
+            "CodeBERT and SAST, and no vulnerability was "
+            "detected by the automated verification pipeline."
+        )
+
+    else:
+
+        status = "PATCH_REQUIRES_REVIEW"
+
+        message = (
+            "The patched code still triggered vulnerability "
+            "indicators during automated re-analysis."
+        )
+
+    # =====================================================
+    # 8. RETURN VERIFICATION RESULTS
+    # =====================================================
+
+    return {
+
+        "verified": verified,
+
+        "status": status,
+
+        "message": message,
+
+        "verdict": verdict,
+
+        "codebert": codebert_result,
+
+        "sast": sast_result.model_dump(),
+
+        "remaining_findings": sast_findings,
+
+    }
 
 # =========================================================
 # MAIN ANALYSIS FUNCTION
@@ -323,22 +537,6 @@ def analyze_code(
     # =====================================================
     # 7. RAG DECISION
     # =====================================================
-    #
-    # IMPORTANT:
-    #
-    # RAG now follows the FINAL AGGREGATED VERDICT.
-    #
-    # This prevents contradictory results such as:
-    #
-    # verdict = no_vulnerability_detected
-    #
-    # while RAG says:
-    #
-    # CWE-78 Command Injection
-    #
-    # RAG runs only when the aggregation layer considers
-    # the code potentially vulnerable.
-    # =====================================================
 
     should_run_rag = (
         verdict != "no_vulnerability_detected"
@@ -360,17 +558,20 @@ def analyze_code(
             "context": None
         }
 
+
     # =====================================================
     # 8. LLM EXPLANATION + REMEDIATION
     # =====================================================
-    # Gemini is downstream of detection and RAG. It does not
-    # modify the aggregation verdict. It explains the evidence
-    # and generates remediation grounded in the retrieved CWE
-    # context.
+
+    # Initialize so it always exists
+    llm_result = None
+
 
     if should_run_rag and rag_result.get("context"):
 
         try:
+
+            # Generate explanation + secure patch
             llm_result = generate_security_analysis(
                 code=code,
                 verdict=verdict,
@@ -381,19 +582,101 @@ def analyze_code(
 
             llm_result["status"] = "completed"
 
+
+            # =============================================
+            # PATCH VERIFICATION
+            # =============================================
+
+            patched_code = llm_result.get(
+                "secure_code",
+                ""
+            )
+
+
+            if patched_code and patched_code.strip():
+
+                try:
+
+                    verification_result = verify_patch(
+                        patched_code=patched_code,
+                        filename=f"patched_{filename}",
+                    )
+
+                except Exception as exc:
+
+                    verification_result = {
+                        "verified": False,
+
+                        "status": "PATCH_VERIFICATION_ERROR",
+
+                        "message": (
+                            "The patch could not be automatically "
+                            "verified."
+                        ),
+
+                        "error": str(exc),
+                    }
+
+            else:
+
+                verification_result = {
+                    "verified": False,
+
+                    "status": "NO_PATCH_GENERATED",
+
+                    "message": (
+                        "The LLM did not return secure code for "
+                        "automatic verification."
+                    ),
+                }
+
+
+            # Add verification to LLM result
+            llm_result[
+                "patch_verification"
+            ] = verification_result
+
+
         except Exception as exc:
 
-            # LLM failure must not invalidate the detector's result.
+            # LLM failure must not invalidate detection
             llm_result = {
                 "status": "failed",
                 "error": str(exc),
+
+                "patch_verification": {
+                    "verified": False,
+
+                    "status": "NOT_RUN",
+
+                    "message": (
+                        "Patch verification was not run because "
+                        "LLM analysis failed."
+                    ),
+                }
             }
+
 
     else:
 
         llm_result = {
             "status": "not_run",
-            "reason": "No vulnerability verdict requiring LLM analysis."
+
+            "reason": (
+                "No vulnerability verdict requiring "
+                "LLM analysis."
+            ),
+
+            "patch_verification": {
+                "verified": False,
+
+                "status": "NOT_RUN",
+
+                "message": (
+                    "No patch was generated because no "
+                    "vulnerability remediation was required."
+                ),
+            }
         }
 
     # =====================================================

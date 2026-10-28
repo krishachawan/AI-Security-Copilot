@@ -51,6 +51,7 @@ def _build_prompt(
     codebert: dict,
     sast_findings: list,
     rag_context: str,
+    patch_feedback: str = "",
 ) -> str:
     """
     Build a grounded security-analysis prompt.
@@ -99,6 +100,18 @@ SOURCE CODE:
 {code}
 ```
 
+PREVIOUS PATCH AND VERIFICATION FEEDBACK:
+{patch_feedback or "This is the initial patch attempt."}
+
+If verification feedback is provided:
+- Treat the previous patch as an unsuccessful attempt.
+- Correct the specific remaining security findings.
+- Preserve the original program's intended functionality.
+- Return the complete corrected Python code in secure_code.
+- Do not return only a diff or explanation.
+- Do not claim the patch is verified; the verification pipeline
+  will independently check it.
+
 Return a concise, technically accurate security assessment. Explain the
 specific risky data flow or insecure construct when possible. Base remediation
 on the retrieved CWE context and the actual source code. If code is already
@@ -112,6 +125,7 @@ def generate_security_analysis(
     codebert: dict,
     sast_findings: list,
     rag_context: str,
+    patch_feedback: str = "",
 ) -> dict:
     """Generate grounded explanation/remediation after detection and RAG."""
 
@@ -121,6 +135,7 @@ def generate_security_analysis(
         codebert=codebert,
         sast_findings=sast_findings,
         rag_context=rag_context,
+        patch_feedback=patch_feedback,
     )
 
     client = get_gemini_client()

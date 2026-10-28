@@ -3,6 +3,7 @@ from app.core.config import MODEL_PATH
 from app.sast.service import scan_code
 from app.rag.service import retrieve_security_context
 from app.llm.service import generate_security_analysis
+import ast
 
 
 # =========================================================
@@ -59,21 +60,25 @@ def has_safe_command_execution_pattern(code: str) -> bool:
 # PATCH VERIFICATION
 # =========================================================
 
+
 def verify_patch(
     patched_code: str,
     filename: str,
 ) -> dict:
     """
     Re-analyze LLM-generated patched code using the
-    CodeBERT + SAST detection layers.
+    Python syntax validator, CodeBERT, and SAST.
 
     This function does NOT run RAG or the LLM again.
-    It is used only to verify whether the patched code
-    still triggers vulnerability indicators.
+    It verifies whether the patched code still triggers
+    vulnerability indicators.
     """
 
-    if not patched_code or not patched_code.strip():
+    # =====================================================
+    # 0. CHECK FOR EMPTY PATCH
+    # =====================================================
 
+    if not patched_code or not patched_code.strip():
         return {
             "verified": False,
             "status": "PATCH_VERIFICATION_FAILED",
@@ -83,7 +88,24 @@ def verify_patch(
         }
 
     # =====================================================
-    # 1. CODEBERT PREDICTION
+    # 1. PYTHON SYNTAX VALIDATION
+    # =====================================================
+
+    try:
+        ast.parse(patched_code)
+
+    except SyntaxError as e:
+        return {
+            "verified": False,
+            "status": "PATCH_SYNTAX_ERROR",
+            "message": (
+                "The generated patch contains invalid Python syntax."
+            ),
+            "syntax_error": str(e),
+        }
+
+    # =====================================================
+    # 2. CODEBERT PREDICTION
     # =====================================================
 
     codebert_result = codebert_classifier.predict(
@@ -91,12 +113,12 @@ def verify_patch(
     )
 
     # =====================================================
-    # 2. SAST SCANNING
+    # 3. SAST SCANNING
     # =====================================================
 
     sast_result = scan_code(
         code=patched_code,
-        filename=filename
+        filename=filename,
     )
 
     sast_findings = [
@@ -105,7 +127,7 @@ def verify_patch(
     ]
 
     # =====================================================
-    # 3. SAST SEVERITY SIGNALS
+    # 4. SAST SEVERITY SIGNALS
     # =====================================================
 
     has_critical_sast = (
@@ -136,17 +158,17 @@ def verify_patch(
     )
 
     # =====================================================
-    # 4. CODEBERT SIGNALS
+    # 5. CODEBERT SIGNALS
     # =====================================================
 
     vulnerable = codebert_result.get(
         "vulnerable",
-        False
+        False,
     )
 
     confidence = codebert_result.get(
         "confidence",
-        0.0
+        0.0,
     )
 
     high_confidence = (
@@ -154,7 +176,7 @@ def verify_patch(
     )
 
     # =====================================================
-    # 5. SAFE COMMAND PATTERN
+    # 6. SAFE COMMAND PATTERN
     # =====================================================
 
     safe_command_pattern = (
@@ -164,66 +186,42 @@ def verify_patch(
     )
 
     # =====================================================
-    # 6. APPLY SAME DETECTION LOGIC
+    # 7. APPLY DETECTION LOGIC
     # =====================================================
 
     if (
         safe_command_pattern
         and not has_medium_or_above_sast
     ):
-
-        verdict = (
-            "no_vulnerability_detected"
-        )
+        verdict = "no_vulnerability_detected"
 
     elif (
         vulnerable
         and high_confidence
         and has_medium_or_above_sast
     ):
-
-        verdict = (
-            "high_confidence_vulnerability"
-        )
+        verdict = "high_confidence_vulnerability"
 
     elif has_high_or_critical_sast:
-
-        verdict = (
-            "sast_detected_vulnerability"
-        )
+        verdict = "sast_detected_vulnerability"
 
     elif vulnerable and high_confidence:
-
-        verdict = (
-            "potential_vulnerability"
-        )
+        verdict = "potential_vulnerability"
 
     elif vulnerable:
-
-        verdict = (
-            "potential_vulnerability"
-        )
+        verdict = "potential_vulnerability"
 
     elif has_medium_sast:
-
-        verdict = (
-            "potential_vulnerability"
-        )
+        verdict = "potential_vulnerability"
 
     elif has_low_sast:
-
-        verdict = (
-            "no_vulnerability_detected"
-        )
+        verdict = "no_vulnerability_detected"
 
     else:
-
-        verdict = (
-            "no_vulnerability_detected"
-        )
+        verdict = "no_vulnerability_detected"
 
     # =====================================================
-    # 7. PATCH VERIFICATION DECISION
+    # 8. PATCH VERIFICATION DECISION
     # =====================================================
 
     verified = (
@@ -231,17 +229,16 @@ def verify_patch(
     )
 
     if verified:
-
         status = "PATCH_VERIFIED"
 
         message = (
-            "The LLM-generated patch was re-analyzed using "
-            "CodeBERT and SAST, and no vulnerability was "
-            "detected by the automated verification pipeline."
+            "The LLM-generated patch passed Python syntax "
+            "validation and was re-analyzed using CodeBERT "
+            "and SAST. No vulnerability was detected by "
+            "the automated verification pipeline."
         )
 
     else:
-
         status = "PATCH_REQUIRES_REVIEW"
 
         message = (
@@ -250,25 +247,17 @@ def verify_patch(
         )
 
     # =====================================================
-    # 8. RETURN VERIFICATION RESULTS
+    # 9. RETURN VERIFICATION RESULTS
     # =====================================================
 
     return {
-
         "verified": verified,
-
         "status": status,
-
         "message": message,
-
         "verdict": verdict,
-
         "codebert": codebert_result,
-
         "sast": sast_result.model_dump(),
-
         "remaining_findings": sast_findings,
-
     }
 
 # =========================================================
@@ -584,57 +573,175 @@ def analyze_code(
 
 
             # =============================================
-            # PATCH VERIFICATION
+            # PATCH VERIFICATION WITH AUTOMATIC RETRIES
             # =============================================
+
+            MAX_PATCH_ATTEMPTS = 4
 
             patched_code = llm_result.get(
                 "secure_code",
                 ""
             )
 
+            verification_result = {
+                "verified": False,
+                "status": "NO_PATCH_GENERATED",
+                "message": (
+                    "The LLM did not return secure code for "
+                    "automatic verification."
+                ),
+            }
+
+            attempt_history = []
 
             if patched_code and patched_code.strip():
 
-                try:
+                for attempt in range(1, MAX_PATCH_ATTEMPTS + 1):
 
-                    verification_result = verify_patch(
-                        patched_code=patched_code,
-                        filename=f"patched_{filename}",
+                    # -----------------------------------------
+                    # Verify the current patch
+                    # -----------------------------------------
+
+                    try:
+                        verification_result = verify_patch(
+                            patched_code=patched_code,
+                            filename=f"patched_{filename}",
+                        )
+
+                    except Exception as exc:
+                        verification_result = {
+                            "verified": False,
+                            "status": "PATCH_VERIFICATION_ERROR",
+                            "message": (
+                                "The patch could not be automatically "
+                                "verified."
+                            ),
+                            "error": str(exc),
+                        }
+
+                    attempt_history.append({
+                        "attempt": attempt,
+                        "status": verification_result.get(
+                            "status",
+                            "UNKNOWN"
+                        ),
+                        "verified": verification_result.get(
+                            "verified",
+                            False
+                        ),
+                    })
+
+                    # -----------------------------------------
+                    # Stop if the patch passes verification
+                    # -----------------------------------------
+
+                    if verification_result.get("verified", False):
+                        break
+
+                    # -----------------------------------------
+                    # Stop after the maximum attempts
+                    # -----------------------------------------
+
+                    if attempt == MAX_PATCH_ATTEMPTS:
+                        break
+
+                    # -----------------------------------------
+                    # Prepare feedback for the LLM
+                    # -----------------------------------------
+
+                    patch_feedback = (
+                        "Your previous patch did not pass automated "
+                        "verification. Correct the patch using the "
+                        "verification results below.\n\n"
+                        f"Attempt: {attempt}\n"
+                        f"Verification status: "
+                        f"{verification_result.get('status')}\n"
+                        f"Verification message: "
+                        f"{verification_result.get('message')}\n"
+                        f"Verification details: "
+                        f"{verification_result}\n\n"
+                        "Previous patch:\n"
+                        f"{patched_code}\n\n"
+                        "Return the complete corrected Python source "
+                        "code in the secure_code field. Do not return "
+                        "a diff or explanation in place of the code. "
+                        "Address the reported findings and preserve "
+                        "the original program's intended functionality."
                     )
 
-                except Exception as exc:
+                    # -----------------------------------------
+                    # Ask the LLM to correct the patch
+                    # -----------------------------------------
 
-                    verification_result = {
-                        "verified": False,
+                    retry_result = generate_security_analysis(
+                        code=code,
+                        verdict=verdict,
+                        codebert=codebert_result,
+                        sast_findings=sast_findings,
+                        rag_context=rag_result["context"],
+                        patch_feedback=patch_feedback,
+                    )
 
-                        "status": "PATCH_VERIFICATION_ERROR",
+                    # -----------------------------------------
+                    # Extract the new patch
+                    # -----------------------------------------
 
-                        "message": (
-                            "The patch could not be automatically "
-                            "verified."
-                        ),
+                    if hasattr(retry_result, "model_dump"):
+                        retry_result = retry_result.model_dump()
 
-                        "error": str(exc),
-                    }
+                    if not isinstance(retry_result, dict):
+                        raise TypeError(
+                            "LLM retry returned an unexpected response type."
+                        )
 
+                    new_patched_code = retry_result.get(
+                        "secure_code",
+                        ""
+                    )
+
+                    if (
+                        not isinstance(new_patched_code, str)
+                        or not new_patched_code.strip()
+                    ):
+                        verification_result = {
+                            "verified": False,
+                            "status": "NO_PATCH_GENERATED",
+                            "message": (
+                                "The LLM did not return corrected code "
+                                "during the retry."
+                            ),
+                        }
+
+                        attempt_history.append({
+                            "attempt": attempt + 1,
+                            "status": "NO_PATCH_GENERATED",
+                            "verified": False,
+                        })
+
+                        break
+
+                    patched_code = new_patched_code
+
+            # =============================================
+            # ATTACH FINAL VERIFICATION RESULTS
+            # =============================================
+
+            llm_result["secure_code"] = patched_code
+
+            llm_result["patch_verification"] = {
+                **verification_result,
+                "attempts": attempt_history,
+                "total_attempts": len(attempt_history),
+            }
+
+            if verification_result.get("verified", False):
+                llm_result["patch_verification"]["status"] = (
+                    "PATCH_VERIFIED"
+                )
             else:
-
-                verification_result = {
-                    "verified": False,
-
-                    "status": "NO_PATCH_GENERATED",
-
-                    "message": (
-                        "The LLM did not return secure code for "
-                        "automatic verification."
-                    ),
-                }
-
-
-            # Add verification to LLM result
-            llm_result[
-                "patch_verification"
-            ] = verification_result
+                llm_result["patch_verification"]["status"] = (
+                    "PATCH_REQUIRES_REVIEW"
+                )
 
 
         except Exception as exc:
